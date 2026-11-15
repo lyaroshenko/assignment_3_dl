@@ -1,0 +1,8 @@
+experiment,CV score,LB score,notes
+baseline,0.9099,,"BiLSTM, 2 layers, Adam (re-run in the same pipeline); lab F1 strict=0.548 loose=0.548; submitted mode=strict; ckpt=best-epoch=3-val_f1=0.9099.ckpt"
+gru,0.9047,,(a) GRU instead of LSTM; lab F1 strict=0.615 loose=0.593; submitted mode=strict; ckpt=best-epoch=2-val_f1=0.9047.ckpt
+1-layer,0.9001,,(b) 1 layer; between-layer dropout off; lab F1 strict=0.657 loose=0.622; submitted mode=strict; ckpt=best-epoch=2-val_f1=0.9001.ckpt
+unidirectional,0.8898,,(c) forward direction only; lab F1 strict=0.583 loose=0.575; submitted mode=strict; ckpt=best-epoch=3-val_f1=0.8898.ckpt
+adamw-onecycle,0.91,,"(d) AdamW wd=0.01 + OneCycleLR, peak lr 3e-3; early stopping off so the cycle completes; lab F1 strict=0.613 loose=0.605; submitted mode=strict; ckpt=best-epoch=4-val_f1=0.9100.ckpt"
+fasttext,0.9152,,"(e) cc.uk.300 init, fine-tuned; emb_dim 300; vocab hit rate 77.1%; lab F1 strict=0.615 loose=0.615; submitted mode=strict; ckpt=best-epoch=1-val_f1=0.9152.ckpt"
+bpe-30k,0.9072,,"(f) BPE 30k subwords; labels: first overlapping subword B, rest I; lab F1 strict=0.582 loose=0.568; submitted mode=strict; ckpt=best-epoch=3-val_f1=0.9072.ckpt"
