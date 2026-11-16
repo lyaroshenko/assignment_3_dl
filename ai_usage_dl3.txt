@@ -1,0 +1,1611 @@
+AI USAGE LOG: full chat transcript (user messages and assistant responses; internal reasoning and tool calls omitted)
+Project: UA Locations Extraction (Kaggle in-class competition), recurrent NER with PyTorch + Lightning + W&B
+Dates: 2026-11-15 to 2026-11-16
+Note: attached files are marked as [Attached: ...]. When the assistant ran code to test its answers, only the final answer is shown here.
+
+================================================================================
+USER (message 1)
+================================================================================
+[Attached: attachment.txt (shape, dtypes and first 5 rows of data/labeling_sample.csv, data/ru_geo_dataset.csv, data/test.csv, data/uk_geo_dataset.csv)]
+
+I'm doing a university deep learning assignment: a Kaggle in-class competition on extracting locations from (probably Ukrainian) text, solved as NER. Hard rules: ONLY recurrent models (LSTM/GRU), NO transformers/attention, NO Keras/TensorFlow. Use PyTorch + PyTorch Lightning + Weights & Biases. I want the SIMPLEST solution that beats the baseline. No clever tricks, short readable code, one colab notebook. My course only allows AI help for individual functions, so give me one small piece at a time and briefly explain it so I can defend it. Don't write anything until I ask for each step.
+
+Here is the competition info (Overview, Data, Evaluation tabs) and the first rows of each file:
+
+Overview
+Welcome to the "UA Locations Extractions" competition! In this competition, participants are challenged to develop an innovative model that can accurately identify and extract location entities from Ukrainian/Russian/Mixed-code texts. With vast amounts of unstructured textual data available in these languages, this task is crucial for many applications, from improving search engines and recommendation systems to aiding geopolitical research.
+Start
+17 days ago
+Close
+15 days to go
+Description
+Named Entity Recognition (NER) is a sub-task of information extraction that classifies named entities in text into predefined categories. In this competition, the focus is exclusively on locations – address1/address2 fields, cities, countries, regions, and other geographical landmarks.
+The RU/UA languages, with their unique morphology and lexicon, present distinct challenges that demand specialized models. Your goal is to develop a model that achieves high precision and recall scores for recognizing these location entities in Russian and Ukrainian texts.
+Evaluation
+Submissions will be evaluated based on the F1-score, which harmoniously considers both precision (the number of correct positive results divided by the number of all positive results) and recall (the number of correct positive results divided by the number of positive results that should have been returned).
+
+```python
+def hard_processing(text):
+    text = re.sub(r"[{re.escape(string.punctuation)}]", "", text)
+    text = re.sub(r'\d', '', text)
+    text = re.sub(r'\b\w\b\s?', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text.lower()
+
+def comp_metric(y_true: List[List[str]], y_pred: List[List[str]]):
+    assert len(y_true) == len(y_pred)
+    tp, fp, fn, p,  = 0.0, 0.0, 0.0, 0.0
+
+    for y_true_sample, y_pred_sample in zip(y_true, y_pred):
+        y_true_sample = set([hard_processing(s) for s in y_true_sample])
+        y_pred_sample = set([hard_processing(s) for s in y_pred_sample])
+
+        tp += len(y_true_sample & y_pred_sample)
+        fp += len(y_pred_sample - y_true_sample)
+        fn += len(y_true_sample - y_pred_sample)
+        p += len(y_true_sample)
+
+    if tp + fp == 0:
+        if p == 0:
+            precision = 1.0
+        else:
+            precision = 0.0
+    else:
+        precision = tp/(tp + fp)
+
+    if tp + fn == 0:
+        if p == 0:
+            recall = 1.0
+        else:
+            recall = 0.0
+    else:
+        recall = tp/(tp + fn)
+
+    if precision + recall == 0:
+        f1 = 0
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
+    return round(f1, 8)
+
+```
+
+Submission File
+For each text_id in the test set, you must predict list of extracted locations from the original text. The file should contain a header and have the following format:
+
+```prolog
+text_id,locations
+0,[]
+1,["Київ"]
+2,[]
+etc.
+```
+
+```
+================================================================================
+data/labeling_sample.csv
+text: '-261.310'
+locations: '[]'
+loc_markers: '[]'
+================================================================================
+data/ru_geo_dataset.csv
+text: 'Вице-премьер по социальным вопросам Татьяна Голикова рассказала, в каких регионах России зафиксирована наиболее высокая смертность от рака, сообщает РИА Новости.'
+loc_markers: '[(82, 88)]'
+org_markers: '[(149, 160)]'
+per_markers: '[(36, 52)]'
+doc_id: np.int64(0)
+sent_id: np.int64(0)
+================================================================================
+data/test.csv
+text_id: np.int64(0)
+text: '❗️Кількість поранених зросла до трьох, – Кличко\n\nКиїв — пряма трансляція 👈'
+locations: '[]'
+================================================================================
+data/uk_geo_dataset.csv
+text: 'Чим довше мають скачки тиску гіпертензією, тим сильніше змінюються стінки цих судин.'
+loc_markers: '[]'
+org_markers: '[]'
+per_markers: '[]'
+is_valid: np.int64(0)
+
+```
+
+Dataset Description
+Name Entity Recognition dataset
+uk_geo_dataset
+Ukrainian dataset [Corpora Ukrainian](https://huggingface.co/datasets/ukr-models/Ukr-Synth). Approximately contains 1M text samples with location and organization entities. Structure:
+
+* text (str): text sample.
+* loc_markers (List[tuple]): list of markers (spans) of location entities. Left and right indices.
+* org_markers (List[tuple]): list of markers (spans) of origanization entities. Left and right indices.
+* per_markers (List[tuple]): list of markers (spans) of person entities. Left and right indices.
+* is_valid (int): whether it was taken from the validation split.
+
+ru_geo_dataset
+russian dataset based on [nerus dataset](https://github.com/natasha/nerus). Approximately contains 8M text samples with location and organization entities. Structure:
+
+* text (str): text sample.
+* loc_markers (List[tuple]): list of markers (spans) of location entities. Left and right indices.
+* org_markers (List[tuple]): list of markers (spans) of origanization entities. Left and right indices.
+* per_markers (List[tuple]): list of markers (spans) of person entities. Left and right indices.
+* doc_id (int): document id.
+* sent_id (int): sentence id within a document.
+
+labeling_sample
+sample from the same distribution as test Structure:
+
+* text_id: id of text sample
+* text: text sample
+* locations: emply list that should be modified in your submission
+* loc_markers: list of markers (spans) of location entities. Left and right indices.
+
+test
+Test dataset Structure:
+
+* text_id: id of text sample
+* text: text sample
+* locations: emply list that should be modified in your submission, you can check how to do this in this [kernel](https://www.kaggle.com/code/abazdyrev/spacyner-baseline)
+
+if you need something else, tell me.
+
+================================================================================
+ASSISTANT (response 1)
+================================================================================
+Got it. I won't write any code until you ask for a specific step. Here's the plan first, so you can check it before we start.
+
+## Approach: a character-level BiLSTM tagger
+
+The model reads the text one character at a time and labels each character as "part of a location" or "not". This is the simplest choice for this task, for three reasons:
+
+- **No tokenizer and no label alignment.** Your labels are character spans like `(82, 88)`, so per-character labels come straight from them. A word-level model would need a tokenizer and code to map spans onto tokens.
+- **No unknown words.** Ukrainian and Russian change word endings a lot (Київ / Києва / Києві). A word vocabulary would miss many of these forms. With characters, every input is known.
+- **It sees capital letters and suffixes for free.** Capitals and endings like `-щині` or `-ській` are strong hints that a word is a place name. The model picks these up without any extra features.
+
+For labels, I'd use **B / I / O** (Begin, Inside, Outside), applied per character. Plain inside/outside labels would be even simpler, but they would merge two locations that sit right next to each other. BIO is also the standard scheme, which makes it easier to defend.
+
+## Steps (one small function or cell each)
+
+1. **Load data.** Read the CSVs and parse the span strings with `ast.literal_eval`. Train on `uk_geo_dataset` (`is_valid` gives you a ready-made validation split). Optionally add a random sample of a few hundred thousand rows from `ru_geo_dataset` for the mixed-language texts. All 8M rows won't fit comfortably in Colab.
+2. **Character vocabulary.** Map each character to an id, with ids reserved for padding and unknown characters (like rare emojis).
+3. **Encoding.** Turn a text into character ids, and its spans into B/I/O labels.
+4. **Dataset and collate function.** Pad each batch to the same length and cut very long texts.
+5. **LightningModule.** Embedding → 2-layer bidirectional LSTM → Linear. Loss is cross-entropy that ignores padding.
+6. **Decoding.** Turn predicted labels back into spans, then into location strings.
+7. **Validation with the real metric.** Run `comp_metric` on `labeling_sample` (it comes from the same kind of texts as the test set) and log the score to W&B.
+8. **Training.** `Trainer` with `WandbLogger` and a checkpoint callback.
+9. **Submission.** Predict on `test.csv` and write lists as JSON with `json.dumps(..., ensure_ascii=False)`, so the Cyrillic letters stay readable.
+
+## Things to keep in mind
+
+- **The texts look different.** Training data is clean, single news sentences. The test set is Telegram posts with emojis, line breaks and longer texts. This is why I'd score on `labeling_sample` and not only on the validation split.
+- **`labeling_sample` has only 26 rows,** so its score will jump around a lot. Use it to see whether things are improving, not as an exact number.
+- **The `locations` column in `test.csv` is just empty placeholders.** Row 0 contains "Київ" but shows `[]`. Ignore that column.
+
+One thing that would help: what is the baseline score on the leaderboard? Then we know what we need to beat.
+
+When you're ready, ask for **Step 1** (loading and parsing the data).
+
+================================================================================
+USER (message 2)
+================================================================================
+Based on the data I pasted, explain in 5 sentences: what one training example looks like, how labels are stored (char offsets? token tags? strings?), and what the submission must contain. Then write one short EDA cell: number of texts, text length distribution, share of texts with 0 locations, locations per text, most common location strings, and whether test texts look similar to train. Max 5 plots.
+
+================================================================================
+ASSISTANT (response 2)
+================================================================================
+**The data in 5 sentences**
+
+1. In `uk_geo_dataset` and `ru_geo_dataset`, one training example is a single clean sentence. It comes with three lists of character spans: locations, organizations and persons. We only need `loc_markers`.
+2. Labels are **character offsets** `(start, end)`, with `end` exclusive. For example, `"Проспект Бандери"` is `(0, 16)`, so `text[0:16]` gives exactly that place name. The lists are stored as strings, so you parse them with `ast.literal_eval`.
+3. There are no token tags anywhere. We build our own per-character B/I/O tags from these spans.
+4. `labeling_sample` has both the offsets and the actual location strings (`locations`). `test.csv` has only the text, and its `locations` column is an empty placeholder.
+5. For each `text_id`, the submission must contain a list of location strings **in the exact form they appear in the text**. The metric lowercases, removes punctuation, digits and one-letter words, and compares sets. So case and duplicates don't matter, but the word form does: "Києва" is not the same as "Київ".
+
+**EDA cell**
+
+```python
+import ast
+from collections import Counter
+import pandas as pd
+import matplotlib.pyplot as plt
+
+uk   = pd.read_csv("data/uk_geo_dataset.csv")
+ru   = pd.read_csv("data/ru_geo_dataset.csv", nrows=300_000)  # 8M rows is too much for EDA
+lab  = pd.read_csv("data/labeling_sample.csv")
+test = pd.read_csv("data/test.csv")
+sets = {"uk": uk, "ru (sample)": ru, "labeling": lab, "test": test}
+
+for name, df in sets.items():
+    df["text"] = df["text"].fillna("").astype(str)
+    df["len"] = df["text"].str.len()
+    if "loc_markers" in df:
+        df["spans"] = df["loc_markers"].apply(ast.literal_eval)
+        df["n_loc"] = df["spans"].str.len()
+
+# --- summary numbers ---
+for name, df in sets.items():
+    newline_share = df["text"].str.contains("\n").mean()
+    msg = f"{name:12s} n={len(df):>8,}  median len={df['len'].median():>4.0f}  max len={df['len'].max():>5}  has newline={newline_share:.1%}"
+    if "n_loc" in df:
+        msg += f"  0 locs={(df['n_loc'] == 0).mean():.1%}  mean locs={df['n_loc'].mean():.2f}"
+    print(msg)
+
+# --- most common location strings ---
+def loc_strings(df):
+    return [t[s:e] for t, spans in zip(df["text"], df["spans"]) for s, e in spans]
+
+top = Counter(loc_strings(uk)).most_common(20)
+print("\nlabeling_sample locations:", loc_strings(lab))
+
+# --- does test look like train? (characters the model would never have seen) ---
+train_chars = set("".join(uk["text"].sample(100_000, random_state=0)))
+test_text = "".join(test["text"])
+print(f"\nShare of test characters unseen in uk train: {sum(c not in train_chars for c in test_text) / len(test_text):.2%}")
+for t in test["text"].sample(3, random_state=0):
+    print("TEST:", repr(t[:150]))
+for t in uk["text"].sample(3, random_state=0):
+    print("UK:  ", repr(t[:150]))
+
+# --- 3 plots ---
+fig, ax = plt.subplots(1, 3, figsize=(18, 4))
+for name, df in sets.items():
+    ax[0].hist(df["len"].clip(upper=1000), bins=50, density=True, histtype="step", label=name)
+ax[0].set(title="Text length (chars, clipped at 1000)"); ax[0].legend()
+
+for name in ["uk", "ru (sample)", "labeling"]:
+    vc = sets[name]["n_loc"].clip(upper=5).value_counts(normalize=True).sort_index()
+    ax[1].plot(vc.index, vc.values, marker="o", label=name)
+ax[1].set(title="Locations per text (5 = 5+)", xlabel="n locations"); ax[1].legend()
+
+words, counts = zip(*top)
+ax[2].barh(words[::-1], counts[::-1]); ax[2].set(title="Top-20 location strings (uk)")
+plt.tight_layout(); plt.show()
+```
+
+**How to explain the cell**
+
+- **The first loop** parses the span strings once and adds two columns: text length and number of locations.
+- **`loc_strings`** cuts each location out of its text using the offsets, `text[s:e]`. This also checks that the offsets are correct.
+- **The "unseen characters" number** matters for our model. It reads characters, so any character it never saw in training (mostly emojis) becomes "unknown". If this share is small, the different style of the test texts isn't a big problem.
+
+When you run it, look at two things. First, test texts should be much longer than train sentences and often contain line breaks. That tells us how much to cut long texts in Step 4. Second, compare the share of texts with 0 locations in `uk` and in `labeling`. That shows how unbalanced the labels are.
+
+I only loaded the first 300k `ru` rows to keep the cell fast. Since rows are grouped by document, that's a rough sample, which is fine for EDA.
+
+Send me the output if you'd like help reading it. Otherwise, ask for **Step 1** when you're ready.
+
+================================================================================
+USER (message 3)
+================================================================================
+```
+uk           n=1,010,000  median len=  91  max len=  255  has newline=0.0%  0 locs=76.9%  mean locs=0.34
+ru (sample)  n=  300,000  median len= 100  max len=  762  has newline=0.0%  0 locs=72.0%  mean locs=0.43
+labeling     n=       26  median len= 218  max len= 1118  has newline=80.8%  0 locs=38.5%  mean locs=1.23
+test         n=      477  median len= 264  max len= 3682  has newline=85.1%
+
+labeling_sample locations: ['Проспект Бандери', 'Київщині', 'Чорнобиль', 'Київ', 'Тетерів', 'Фастів', 'Біла Церква', 'Миронівка', 'Бориспіль', 'Яготин', 'Баришівка', 'проспекті Івасюка', 'Києва', 'Хелма', 'Києву', 'ТЦ Аркадія', 'Фастовском', 'Бучанском', 'Троєщині', 'Шевченківському районі', 'Героїв Дніпра', "вул. Солом'янська, 28", 'Києвом', 'Васильковом', 'Києва', 'Броварах', 'Київщині', 'Києві', 'Подолі', 'Пскові', 'вулиці Здолбунівській', 'вул. Здолбунівська, 1']
+
+Share of test characters unseen in uk train: 2.01%
+TEST: 'Ще летить'
+TEST: 'Друзі!\n\nНагадуємо, що сьогодні о 14:00 у Київському апеляційному суді відбудеться розгляд апеляційної скарги адвокатів трьох обвинувачених у вбивстві '
+TEST: 'Мешканцям зруйнованого ворожим дроном будинку на Жилянській Непоп і ко пропонують житло на вулиці Поліська. Ідеться про 25-поверховий будинок біля Дар'
+UK:   "Уже якийсь час тому залізниця змінила HP Non-Stop, котрий обслуговував розклад поїздів на Linux'а."
+UK:   'А це вже Конституційний суд України. Той самий, що навесні визнав неконституційним закон про незаконне збагачення.'
+UK:   'Чорнило отримало назву Flink - "функціональне живе чорнило".'
+```
+
+================================================================================
+ASSISTANT (response 3)
+================================================================================
+Here's what the numbers mean for the model.
+
+**1. Test texts are much longer and different in shape.** Training sentences are at most 255 characters and never contain a line break. Test texts have a median of 264 characters, go up to 3,682, and 85% contain `\n`. The model will never have seen a line break or a very long sequence. The simple fix is to **split each test text on `\n` and predict line by line**, then put the results back together. Each line is close to a training sentence, and line breaks never reach the model. I'll add this to the prediction step. In training, no texts need cutting: 255 characters is short.
+
+**2. Mixed language is real.** `labeling_sample` has Russian forms like "Фастовском", "Бучанском" and "Пскові" inside Ukrainian posts. That's a good reason to **train on the Ukrainian data plus a sample of the Russian data**, not Ukrainian only.
+
+**3. Locations appear in inflected forms.** "Києва", "Києву", "Києвом" and "Києві" all appear, and the metric wants the exact form from the text. A character model handles this naturally, which supports the original choice.
+
+**4. The labels follow different rules than the training data.** The sample labels streets and addresses ("проспекті Івасюка", "вул. Солом'янська, 28"), districts ("Шевченківському районі") and even a shopping mall ("ТЦ Аркадія"). The training data mostly labels cities, regions and countries. So expect weaker recall on streets. Fixing that would need extra tricks, and you asked for the simplest solution, so we accept it. If you have to explain a lower score, this is the main reason.
+
+**5. Most text has no location at all.** 77% of Ukrainian sentences have none, and per character the share of "O" labels is even higher. Plain cross-entropy is fine to start with. We only add class weights if the model learns to predict "no location" everywhere.
+
+**6. 2% of test characters never appear in the Ukrainian training text** (mostly emojis). They become the "unknown" id, which is harmless.
+
+**Changes to the plan:**
+- **Step 1:** load all of the Ukrainian data plus about 500k Russian rows.
+- **Prediction:** split each test text into lines before predicting.
+
+Ask for **Step 1** when you're ready.
+
+================================================================================
+USER (message 4)
+================================================================================
+Explain the competition metric in simple words. Give me: 2 strengths, 2 weaknesses, 2 edge cases (e.g. partial span match, empty prediction), 2 complementary metrics, and one alternative target metric with a justification. Keep it short enough to paste into my report. Also write a Python function that computes the competition metric locally exactly as Kaggle does.
+
+================================================================================
+ASSISTANT (response 4)
+================================================================================
+I ran the cleaning function from the Evaluation tab on a few strings, and it doesn't do what it seems to. That changes some of what goes in your report.
+
+## The metric in simple words
+
+For each text, the gold locations and your predicted locations are cleaned (lowercased, digits and one-letter words removed) and turned into sets. A predicted string that exactly matches a gold string counts as correct (a true positive, TP). An extra prediction is a false positive (FP), and a missed location is a false negative (FN). These counts are added up over the **whole test set**, and then one precision, one recall and their F1 are computed. Only the strings matter, not where they appear in the text.
+
+**Hidden detail:** the punctuation-removing line in `hard_processing` is missing the `f` in front of the string. So the pattern is the literal text `[{re.escape(string.punctuation)}]`. It only removes `. ( ) { }` and a few Latin letters. Commas, apostrophes, hyphens and quotes are **not** removed. From my test:
+
+- `"вул. Солом'янська, 28"` becomes `"вул солом'янська,"` (the comma stays)
+- `"Київ,"` becomes `"київ,"`, which does not match `"київ"`
+
+So a span that includes a trailing comma or quote counts as wrong. When we turn predictions back into strings, we should trim leading and trailing punctuation.
+
+## Strengths
+1. **It doesn't depend on tokenization.** Only the final strings are compared, so a character model, a word model or a rule system are all scored the same way.
+2. **It's fair when most texts have no locations.** Counts are pooled over all texts, so empty texts neither help nor hurt, and both missing locations and predicting too many are penalized.
+
+## Weaknesses
+1. **All or nothing.** "Шевченківському" against the gold "Шевченківському районі" gives 0 credit and is counted twice: 1 FP and 1 FN. Near-correct boundaries score the same as complete misses.
+2. **Texts with many locations dominate.** Because counts are pooled, one post listing 10 towns weighs as much as 10 short posts. With only 477 test texts, the score is noisy. The punctuation bug above also adds noise unrelated to model quality.
+
+## Edge cases
+1. **Partial or wrong-form match:** "Київ" against the gold "Києва" scores 0, because nothing reduces words to their base form. You must copy the exact form from the text.
+2. **Empty prediction and duplicates:** predicting `[]` for a text with no locations adds nothing to any count, so it's safe. Predicting the same city twice in one text counts once, because sets remove duplicates. A string that becomes empty after cleaning (e.g. `"28"` becomes `""`) is still a set element and can create a false positive.
+
+## Complementary metrics
+1. **Precision and recall reported separately.** They show whether the model misses locations or invents them. F1 alone hides this.
+2. **Token-level or character-level F1 on the validation split.** It gives partial credit for overlapping spans, uses about 100k sentences instead of 26, and directly measures what our tagger predicts.
+
+## Alternative target metric
+**Partial-match entity F1** (like the "partial" mode of the SemEval-2013 NER evaluation): an overlapping prediction earns half credit (or credit proportional to word overlap) instead of zero. For real uses like geocoding or search, "Шевченківському" still points to the right district, so a nearly correct span is worth more than a miss. This metric reflects that and is less noisy on a small validation set.
+
+## Local metric, exactly as Kaggle computes it
+
+This is copied as written, including the missing `f`, so your local score matches the leaderboard:
+
+```python
+import re
+import string
+from typing import List
+
+def hard_processing(text):
+    # NOTE: no f-prefix in the original -> this only strips . ( ) { } and some Latin letters,
+    # NOT commas/apostrophes/hyphens. Kept as-is to match Kaggle's scorer.
+    text = re.sub(r"[{re.escape(string.punctuation)}]", "", text)
+    text = re.sub(r'\d', '', text)
+    text = re.sub(r'\b\w\b\s?', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text.lower()
+
+def comp_metric(y_true: List[List[str]], y_pred: List[List[str]]):
+    assert len(y_true) == len(y_pred)
+    tp, fp, fn, p = 0.0, 0.0, 0.0, 0.0
+    for y_true_sample, y_pred_sample in zip(y_true, y_pred):
+        y_true_sample = set(hard_processing(s) for s in y_true_sample)
+        y_pred_sample = set(hard_processing(s) for s in y_pred_sample)
+        tp += len(y_true_sample & y_pred_sample)
+        fp += len(y_pred_sample - y_true_sample)
+        fn += len(y_true_sample - y_pred_sample)
+        p += len(y_true_sample)
+
+    if tp + fp == 0:
+        precision = 1.0 if p == 0 else 0.0
+    else:
+        precision = tp / (tp + fp)
+    if tp + fn == 0:
+        recall = 1.0 if p == 0 else 0.0
+    else:
+        recall = tp / (tp + fn)
+
+    f1 = 0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
+    return round(f1, 8)
+```
+
+To use it on `labeling_sample`, pass in the parsed `locations` column: `comp_metric(lab["locations"].apply(ast.literal_eval).tolist(), predictions)`. Two quick checks: gold against itself should give 1.0, and all-empty predictions should give 0.0.
+
+The only change from the original is shorter `if/else` for precision and recall, with the same logic. If you'd rather paste it exactly as written, that works too.
+
+Ask for **Step 1** when you're ready.
+
+================================================================================
+USER (message 5)
+================================================================================
+Write a cell that makes ONE fixed train/validation split (80/20, seed 42) and saves the indices so every experiment uses the same split. If the data has a natural group/time column, use a grouped split instead and tell me why. Give me 3 sentences for my report explaining the choice and why CV might or might not correlate with the public leaderboard.
+
+================================================================================
+ASSISTANT (response 5)
+================================================================================
+## Is there a natural group column?
+
+**Yes, in the Russian data:** `ru_geo_dataset` has `doc_id`, and consecutive sentences come from the same news article. If you split it randomly, sentences from one article land in both train and validation. They share names and places ("Голикова", "Псковской"), so the validation score comes out too high. So the Russian rows are **split by article (`doc_id`)**.
+
+**No, in the Ukrainian data:** `uk_geo_dataset` has no group or time column, so each sentence is its own group, which amounts to a random split. It does have `is_valid`, the dataset's own small validation part. I'm ignoring it because you asked for 80/20, but you can mention it in the report.
+
+One `GroupShuffleSplit` call handles both cases. This cell also builds the training pool from Step 1 (all Ukrainian rows plus 500k Russian rows) and saves it, so later cells load the same rows in the same order.
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import GroupShuffleSplit
+
+uk = pd.read_csv("data/uk_geo_dataset.csv", usecols=["text", "loc_markers"])
+ru = pd.read_csv("data/ru_geo_dataset.csv", usecols=["text", "loc_markers", "doc_id"], nrows=500_000)
+
+uk["group"] = "uk_" + uk.index.astype(str)        # no group column -> each sentence is its own group
+ru["group"] = "ru_" + ru["doc_id"].astype(str)    # all sentences of one article stay on the same side
+pool = pd.concat([uk, ru.drop(columns="doc_id")], ignore_index=True)
+pool["text"] = pool["text"].fillna("").astype(str)
+
+splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+train_idx, val_idx = next(splitter.split(pool, groups=pool["group"]))
+
+pool.to_parquet("data/pool.parquet")
+np.savez("data/split.npz", train_idx=train_idx, val_idx=val_idx)
+
+print(f"pool={len(pool):,}  train={len(train_idx):,}  val={len(val_idx):,}  val share={len(val_idx)/len(pool):.1%}")
+assert not set(pool.loc[train_idx, "group"]) & set(pool.loc[val_idx, "group"]), "group leak!"
+```
+
+**How to explain it:**
+- **`test_size=0.2` takes 20% of groups, not rows.** Since almost all groups are single Ukrainian sentences, the result is very close to 20% of rows. The printed `val share` lets you check.
+- **The `assert` checks for leaks:** no article appears on both sides.
+- **The split is fixed:** later cells only do `np.load("data/split.npz")`, so every experiment uses exactly the same indices.
+- **`labeling_sample` stays out of the split.** It is our separate test-like check.
+
+Two practical notes. First, Colab deletes local files when the session ends, so save `pool.parquet` and `split.npz` to Google Drive (or re-run this cell, which gives the same split). Second, 300k validation rows is slow to score every epoch. In the training step we can check a fixed subset each epoch and use the full set once at the end.
+
+## For your report (3 sentences)
+
+We use one fixed 80/20 split with seed 42. Russian sentences are split by `doc_id` so that sentences from the same article never appear in both train and validation, while Ukrainian sentences have no group information and are split randomly. The validation set comes from the same clean, single-sentence news corpora as the training data, but the test set is long, multi-line Telegram posts with a different labeling convention (streets, addresses, districts), so validation scores will likely be higher than the leaderboard and may not rank models in the same order. For this reason we also track the competition metric on the 26-row `labeling_sample`, which matches the test data but is very noisy, and treat the public leaderboard (part of only 477 texts) as another noisy signal, not the final truth.
+
+Ask for **Step 2** (the character vocabulary) when you're ready.
+
+================================================================================
+USER (message 6)
+================================================================================
+Write simple functions to: (1) split text into word tokens with a regex while keeping each token's char start/end, (2) convert the training labels into BIO tags per token (O, B-LOC, I-LOC), (3) build a vocabulary (min_freq=2, plus <pad> and <unk>), (4) a PyTorch Dataset and a collate_fn that pads to the longest sequence in the batch and returns a mask. Add a sanity check that converts tags back to spans and prints 3 examples.
+
+================================================================================
+ASSISTANT (response 6)
+================================================================================
+You've switched from character tokens to **word tokens**. That's fine, and it's the more standard NER setup. The trade-off is that rare place names and unusual word forms will map to `<unk>`. To keep some of the signal the character model would have had, the vocabulary **keeps capital letters** ("Київ" and "київ" are different entries), because capitalization is one of the strongest hints for a location.
+
+I tested the functions on rows from your data, including the tricky address. All spans convert to tags and back exactly.
+
+## Cell 1: functions
+
+```python
+import re
+from collections import Counter
+import torch
+from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
+
+# (1) Tokenizer: words (apostrophes/hyphens inside a word allowed) or single punctuation/emoji
+TOKEN_RE = re.compile(r"\w+(?:['’ʼ-]\w+)*|[^\w\s]")
+
+def tokenize(text):
+    return [(m.group(), m.start(), m.end()) for m in TOKEN_RE.finditer(text)]
+
+# (2) Char spans -> BIO tags per token, and back
+TAGS = ["O", "B-LOC", "I-LOC"]
+TAG2ID = {t: i for i, t in enumerate(TAGS)}
+
+def spans_to_bio(tokens, spans):
+    tags = ["O"] * len(tokens)
+    for s, e in spans:
+        inside = [i for i, (_, ts, te) in enumerate(tokens) if ts < e and te > s]  # tokens overlapping the span
+        for k, i in enumerate(inside):
+            tags[i] = "B-LOC" if k == 0 else "I-LOC"
+    return tags
+
+def bio_to_spans(tokens, tags):
+    spans, cur = [], None
+    for (_, ts, te), tag in zip(tokens, tags):
+        if tag == "B-LOC" or (tag == "I-LOC" and cur is None):   # an I without B also starts a span
+            if cur: spans.append(tuple(cur))
+            cur = [ts, te]
+        elif tag == "I-LOC":
+            cur[1] = te                                           # extend the current span
+        else:
+            if cur: spans.append(tuple(cur))
+            cur = None
+    if cur: spans.append(tuple(cur))
+    return spans
+
+# (3) Vocabulary
+PAD, UNK = 0, 1
+
+def build_vocab(texts, min_freq=2):
+    counts = Counter(tok for t in texts for tok, _, _ in tokenize(t))
+    itos = ["<pad>", "<unk>"] + [w for w, c in counts.items() if c >= min_freq]
+    return {w: i for i, w in enumerate(itos)}
+
+# (4) Dataset + collate
+class NERDataset(Dataset):
+    def __init__(self, texts, spans_list, vocab):
+        self.texts, self.spans_list, self.vocab = list(texts), list(spans_list), vocab
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, i):
+        tokens = tokenize(self.texts[i])
+        ids = [self.vocab.get(tok, UNK) for tok, _, _ in tokens]
+        tags = [TAG2ID[t] for t in spans_to_bio(tokens, self.spans_list[i])]
+        return torch.tensor(ids), torch.tensor(tags)
+
+def collate_fn(batch):
+    ids, tags = zip(*batch)
+    ids = pad_sequence(ids, batch_first=True, padding_value=PAD)
+    tags = pad_sequence(tags, batch_first=True, padding_value=-100)  # -100 = ignored by CrossEntropyLoss
+    return ids, tags, ids != PAD                                     # mask: True for real tokens
+```
+
+## Cell 2: build everything and run the sanity check
+
+```python
+import ast
+import numpy as np
+import pandas as pd
+from torch.utils.data import DataLoader
+
+pool = pd.read_parquet("data/pool.parquet")
+pool["spans"] = pool["loc_markers"].apply(ast.literal_eval)
+split = np.load("data/split.npz")
+train_df = pool.iloc[split["train_idx"]]
+val_df = pool.iloc[split["val_idx"]]
+train_df = train_df[train_df["text"].str.strip() != ""]   # empty texts give 0 tokens -> drop
+val_df = val_df[val_df["text"].str.strip() != ""]
+
+vocab = build_vocab(train_df["text"], min_freq=2)          # train only -> no leak from val
+print(f"vocab size: {len(vocab):,}")
+
+# 3 examples: gold spans vs spans rebuilt from BIO tags
+for text, spans in train_df[train_df["spans"].str.len() > 0][["text", "spans"]].head(3).values:
+    tokens = tokenize(text)
+    tags = spans_to_bio(tokens, spans)
+    print("\nTEXT:   ", text)
+    print("TAGGED: ", [(tok, tag) for (tok, _, _), tag in zip(tokens, tags) if tag != "O"])
+    print("GOLD:   ", [text[s:e] for s, e in spans])
+    print("REBUILT:", [text[s:e] for s, e in bio_to_spans(tokens, tags)])
+
+# round-trip accuracy and unknown-word rate on samples
+sample = train_df.sample(20_000, random_state=0)
+ok = np.mean([bio_to_spans(tokenize(t), spans_to_bio(tokenize(t), sp)) == list(sp)
+              for t, sp in zip(sample["text"], sample["spans"])])
+val_tokens = [tok for t in val_df["text"].sample(20_000, random_state=0) for tok, _, _ in tokenize(t)]
+print(f"\nspans recovered exactly: {ok:.2%}   val <unk> rate: {np.mean([tok not in vocab for tok in val_tokens]):.2%}")
+
+ids, tags, mask = next(iter(DataLoader(NERDataset(train_df["text"][:4], train_df["spans"][:4], vocab),
+                                       batch_size=4, collate_fn=collate_fn)))
+print("batch shapes:", ids.shape, tags.shape, "| real tokens per row:", mask.sum(1).tolist())
+```
+
+## How to explain it
+
+- **Tokenizer:** `\w+(?:['’ʼ-]\w+)*` keeps "Солом'янська" and "Київ-Пасажирський" as one token, because Ukrainian apostrophes and hyphens are part of the word. Every other non-space character, such as punctuation or an emoji, becomes its own token. `finditer` gives each token's start and end position for free, which is how we turn predictions back into exact strings.
+- **`spans_to_bio`:** a token belongs to a location if it **overlaps** the gold span. The first such token is tagged `B-LOC` and the rest `I-LOC`. Overlap rather than exact containment means a span boundary that falls inside a token still keeps the token.
+- **`bio_to_spans`:** joins `B, I, I…` into one span from the first token's start to the last token's end. An `I-LOC` with no `B-LOC` before it is treated as the start of a new span, so a slightly wrong prediction isn't thrown away.
+- **Vocabulary:** words seen at least twice in the **train split only**. Building it on train only keeps validation honest: unseen words there become `<unk>`, just as they will in the test set. `<pad>` = 0 and `<unk>` = 1.
+- **Collate function:** pads each batch to its longest text. Tags are padded with `-100`, which `CrossEntropyLoss` ignores by default, so padding never affects the loss. The mask marks which positions are real tokens.
+
+## What to check in the output
+
+- **"spans recovered exactly"** should be close to 100%. Anything lower means some gold spans start or end inside a token.
+- **"val `<unk>` rate"** shows how much the word vocabulary misses.
+- **"vocab size"**: with min_freq=2 and capitals kept, it may be several hundred thousand words. That's fine on a GPU, but if the embedding table is too big for memory, raising `min_freq` to 3–5 is the simplest fix.
+
+Ask for the **model** (LightningModule) when you're ready.
+
+================================================================================
+USER (message 7)
+================================================================================
+Write a PyTorch LightningModule: Embedding -> LSTM (configurable: LSTM/GRU, num_layers, bidirectional) -> Dropout -> Linear to 3 tags. CrossEntropy loss that ignores padding. Log train/val loss and my competition metric to W&B every epoch, plus the gradient norm (for the gradient-flow health check). Config as a simple dict so I can change one thing per run. Then write the Trainer cell with early stopping on the val metric and checkpointing of the best model.
+
+================================================================================
+ASSISTANT (response 7)
+================================================================================
+I tested both cells on toy data, with a CSV logger in place of W&B. Training, the checkpoint, early stopping, the gradient-norm logging and reloading the best model all work.
+
+## Cell 1: config and model
+
+```python
+# !pip install -q lightning wandb
+import torch
+import torch.nn as nn
+import lightning as L
+from lightning.pytorch.utilities import grad_norm
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
+config = dict(
+    rnn="lstm",          # "lstm" or "gru"
+    emb_dim=128,
+    hidden=256,
+    num_layers=2,
+    bidirectional=True,
+    dropout=0.3,
+    lr=1e-3,
+    batch_size=256,
+    max_epochs=10,
+    patience=2,          # early stopping: epochs without val_f1 improvement
+    grad_clip=1.0,
+    val_size=20_000,     # val rows scored every epoch (the full 300k is too slow)
+    seed=42,
+)
+
+class Tagger(L.LightningModule):
+    def __init__(self, config, vocab_size, val_texts=None, val_spans=None):
+        super().__init__()
+        self.save_hyperparameters(ignore=["val_texts", "val_spans"])   # config + vocab_size -> W&B and checkpoint
+        rnn_cls = nn.LSTM if config["rnn"] == "lstm" else nn.GRU
+        self.emb = nn.Embedding(vocab_size, config["emb_dim"], padding_idx=PAD)
+        self.rnn = rnn_cls(config["emb_dim"], config["hidden"], num_layers=config["num_layers"],
+                           bidirectional=config["bidirectional"], batch_first=True,
+                           dropout=config["dropout"] if config["num_layers"] > 1 else 0.0)
+        out_dim = config["hidden"] * (2 if config["bidirectional"] else 1)
+        self.drop = nn.Dropout(config["dropout"])
+        self.head = nn.Linear(out_dim, len(TAGS))
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=-100)        # -100 = padded positions
+        self.val_texts, self.val_spans, self.val_preds = val_texts, val_spans, []
+
+    def forward(self, ids, mask):
+        x = self.emb(ids)
+        packed = pack_padded_sequence(x, mask.sum(1).cpu(), batch_first=True, enforce_sorted=False)
+        out, _ = self.rnn(packed)
+        out, _ = pad_packed_sequence(out, batch_first=True, total_length=ids.size(1))
+        return self.head(self.drop(out))                              # (batch, seq_len, 3)
+
+    def _loss(self, logits, tags):
+        return self.loss_fn(logits.reshape(-1, len(TAGS)), tags.reshape(-1))
+
+    def training_step(self, batch, batch_idx):
+        ids, tags, mask = batch
+        loss = self._loss(self(ids, mask), tags)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        ids, tags, mask = batch
+        logits = self(ids, mask)
+        self.log("val_loss", self._loss(logits, tags), on_epoch=True, prog_bar=True)
+        for row, m in zip(logits.argmax(-1), mask):
+            self.val_preds.append(row[m].tolist())                    # predicted tag ids, padding removed
+
+    def on_validation_epoch_end(self):
+        if len(self.val_preds) == len(self.val_texts):                # skip Lightning's 2-batch sanity check
+            y_true, y_pred = [], []
+            for text, spans, tag_ids in zip(self.val_texts, self.val_spans, self.val_preds):
+                pred_spans = bio_to_spans(tokenize(text), [TAGS[t] for t in tag_ids])
+                y_true.append([text[s:e] for s, e in spans])
+                y_pred.append([text[s:e] for s, e in pred_spans])
+            self.log("val_f1", comp_metric(y_true, y_pred), prog_bar=True)
+        self.val_preds.clear()
+
+    def on_before_optimizer_step(self, optimizer):
+        self.log_dict(grad_norm(self, norm_type=2))                   # per-layer + total grad norm, before clipping
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.hparams.config["lr"])
+```
+
+## Cell 2: data loaders and Trainer
+
+```python
+import wandb
+from torch.utils.data import DataLoader
+from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+
+L.seed_everything(config["seed"])
+val_small = val_df.sample(config["val_size"], random_state=config["seed"])
+
+train_dl = DataLoader(NERDataset(train_df["text"], train_df["spans"], vocab), batch_size=config["batch_size"],
+                      shuffle=True, collate_fn=collate_fn, num_workers=2)
+val_dl = DataLoader(NERDataset(val_small["text"], val_small["spans"], vocab), batch_size=config["batch_size"],
+                    shuffle=False, collate_fn=collate_fn, num_workers=2)   # no shuffle: preds must match val_texts order
+
+model = Tagger(config, len(vocab), val_small["text"].tolist(), val_small["spans"].tolist())
+
+ckpt = ModelCheckpoint(monitor="val_f1", mode="max", save_top_k=1, filename="best-{epoch}-{val_f1:.4f}")
+early = EarlyStopping(monitor="val_f1", mode="max", patience=config["patience"])
+trainer = L.Trainer(
+    max_epochs=config["max_epochs"],
+    logger=WandbLogger(project="ua-locations-ner"),
+    callbacks=[ckpt, early],
+    gradient_clip_val=config["grad_clip"],
+    log_every_n_steps=50,
+    accelerator="auto",
+)
+trainer.fit(model, train_dl, val_dl)
+print("best:", ckpt.best_model_path, ckpt.best_model_score)
+wandb.finish()   # close the run so the next experiment starts a new one
+```
+
+## How to explain it
+
+- **The RNN is chosen from the config:** `nn.LSTM` and `nn.GRU` take the same arguments, so one string switches between them. Dropout *between* RNN layers only works with 2 or more layers, which is why it's set to 0 for one layer. A separate `Dropout` before the output layer always applies.
+- **Packing (`pack_padded_sequence`):** tells the RNN each sentence's real length, so it never reads padding. This matters most for the backward direction of a bidirectional RNN. Without packing, it would start from the padding at the end of each sentence instead of the last real word.
+- **The loss ignores padding:** padded tags are `-100` (from `collate_fn`), the default `ignore_index` of `CrossEntropyLoss`. We flatten to (batch × tokens, 3) because the loss expects one row per token.
+- **Competition metric on validation:** each val step stores its predicted tags. At the end of the epoch they are turned into spans, then strings, and scored with `comp_metric` against the gold strings. This works only because the val loader is **not shuffled**, so the stored predictions stay in the same order as `val_texts`.
+- **Gradient norm:** `grad_norm` returns the L2 norm of every layer's gradient plus the total, and it's logged *before* clipping. On a healthy run, W&B should show the total norm staying roughly stable. Norms near zero mean gradients are vanishing. Spikes that hit the clip value often mean gradients are exploding (lower `lr`). If the embedding norm is much smaller than the LSTM norms, the signal isn't reaching the early layers.
+- **Callbacks:** both watch `val_f1` with `mode="max"`. Early stopping ends training after `patience` epochs without improvement, and `ModelCheckpoint` keeps only the best epoch. `save_hyperparameters` stores the config in W&B and in the checkpoint, so `Tagger.load_from_checkpoint(path)` rebuilds the same model later.
+
+## Practical notes
+
+- **Each run:** change one value in `config`, then re-run Cell 2. `wandb.finish()` makes each run a separate line in W&B, and W&B records the config, so runs are easy to compare.
+- **Epoch time:** about 1.2M sentences / 256 per batch ≈ 4,700 steps per epoch. On a Colab T4 that's probably several minutes. For quick tests, add `limit_train_batches=0.1` to the Trainer.
+- **Save the vocabulary:** the checkpoint stores only `vocab_size`, not the vocabulary itself. Run `pickle.dump(vocab, open("vocab.pkl", "wb"))` now, because the prediction step needs the exact same vocabulary.
+
+Next is the **prediction function**: split test texts into lines, predict, and turn the tags back into strings. It also lets us log the score on `labeling_sample`. Ask for it when you're ready.
+
+================================================================================
+USER (message 8)
+================================================================================
+Write a function that takes model outputs for the test set, turns token tags into location spans in the exact submission format, and saves submission.csv. Implement two merging modes: "strict" (B starts an entity, I continues it) and "loose" (any run of consecutive non-O tokens is one entity). Also return the softmax probabilities so I can use them later for threshold tuning and ensembling.
+
+================================================================================
+ASSISTANT (response 8)
+================================================================================
+I tested this on a toy model. Both merge modes behave as intended, line splitting works, duplicates are removed, and the CSV loads back correctly.
+
+## Cell 1: functions
+
+```python
+import json
+import numpy as np
+import pandas as pd
+
+STRIP_CHARS = " ,;:!?\"'«»()—–-"   # the metric keeps commas/quotes (missing f-string), so trim them from span edges
+
+def tags_to_spans(tokens, tags, mode="strict"):
+    spans, cur = [], None
+    for (_, ts, te), tag in zip(tokens, tags):
+        if tag == "O":
+            cur = None                                            # O closes the current entity
+        elif cur is not None and (tag == "I-LOC" or mode == "loose"):
+            cur[1] = te                                           # continue: I (strict) or any non-O (loose)
+        elif tag == "B-LOC" or mode == "loose":
+            cur = [ts, te]                                        # start a new entity
+            spans.append(cur)
+        # strict mode: I-LOC with no open entity is ignored
+    return [tuple(s) for s in spans]
+
+@torch.no_grad()
+def predict_probs(model, texts, vocab, batch_size=256):
+    model.eval()
+    # 1) tokenize each full text, then cut its token list into lines (chunks)
+    all_tokens, chunks = [], []                                   # chunk = (text index, first token, last token + 1)
+    for i, text in enumerate(texts):
+        tokens = tokenize(text)
+        all_tokens.append(tokens)
+        start = 0
+        for j in range(1, len(tokens) + 1):
+            if j == len(tokens) or "\n" in text[tokens[j - 1][2]:tokens[j][1]]:
+                chunks.append((i, start, j))
+                start = j
+    # 2) run the model on chunks in batches and put the probabilities back per text
+    probs = [np.zeros((len(t), len(TAGS)), dtype=np.float32) for t in all_tokens]
+    for b in range(0, len(chunks), batch_size):
+        batch = chunks[b:b + batch_size]
+        ids = [torch.tensor([vocab.get(tok, UNK) for tok, _, _ in all_tokens[i][s:e]]) for i, s, e in batch]
+        ids = pad_sequence(ids, batch_first=True, padding_value=PAD).to(model.device)
+        p = model(ids, ids != PAD).softmax(-1).cpu().numpy()
+        for row, (i, s, e) in zip(p, batch):
+            probs[i][s:e] = row[:e - s]
+    return all_tokens, probs                                      # probs[i]: (n_tokens_i, 3) for O, B-LOC, I-LOC
+
+def probs_to_locations(texts, tokens_list, probs_list, mode="strict"):
+    all_locs = []
+    for text, tokens, probs in zip(texts, tokens_list, probs_list):
+        tags = [TAGS[k] for k in probs.argmax(-1)]
+        locs = [text[s:e].strip(STRIP_CHARS) for s, e in tags_to_spans(tokens, tags, mode)]
+        all_locs.append(list(dict.fromkeys(l for l in locs if l)))   # drop empty, remove duplicates, keep order
+    return all_locs
+
+def make_submission(test_df, tokens_list, probs_list, mode="strict", path="submission.csv"):
+    locs = probs_to_locations(test_df["text"], tokens_list, probs_list, mode)
+    sub = pd.DataFrame({"text_id": test_df["text_id"],
+                        "locations": [json.dumps(l, ensure_ascii=False) for l in locs]})
+    sub.to_csv(path, index=False)
+    return sub
+```
+
+## Cell 2: compare the modes on `labeling_sample`, then write the submission
+
+```python
+import ast, pickle
+
+model = Tagger.load_from_checkpoint(ckpt.best_model_path).to("cuda" if torch.cuda.is_available() else "cpu")
+vocab = pickle.load(open("vocab.pkl", "rb"))
+
+lab = pd.read_csv("data/labeling_sample.csv")
+test = pd.read_csv("data/test.csv")
+for df in (lab, test):
+    df["text"] = df["text"].fillna("").astype(str)
+
+lab_tokens, lab_probs = predict_probs(model, lab["text"], vocab)
+gold = lab["locations"].apply(ast.literal_eval).tolist()
+for mode in ["strict", "loose"]:
+    print(f"{mode:6s} labeling_sample F1 = {comp_metric(gold, probs_to_locations(lab['text'], lab_tokens, lab_probs, mode)):.4f}")
+
+test_tokens, test_probs = predict_probs(model, test["text"], vocab)
+sub = make_submission(test, test_tokens, test_probs, mode="strict")      # use the better mode from above
+pickle.dump((test_tokens, test_probs), open("test_probs.pkl", "wb"))     # for threshold tuning / ensembling later
+print(sub.head(10))
+```
+
+## How to explain it
+
+- **The two merge modes.** For tags `B I O I`, strict gives one entity and drops the lone `I` after `O`, while loose gives two entities. For `B B`, strict gives two entities and loose merges them into one. Strict trusts the model's B/I distinction. Loose forgives B/I mistakes but can glue two neighboring locations together. Which works better is an empirical question, and that's why the first cell compares them.
+- **Splitting into lines without splitting the text.** We tokenize the whole text, so every token's position refers to the original text. Then we cut the token list wherever the gap between two tokens contains `\n`. Each line goes through the model separately, which matches the short single sentences it was trained on. Since positions always refer to the full text, `text[s:e]` gives the exact original string, which is what the metric needs.
+- **Probabilities.** `softmax` over the 3 tags gives one row `[P(O), P(B), P(I)]` per token. The default decision is `argmax`. Later you can apply a threshold instead (e.g. call a token a location if `1 - P(O) > 0.3`). You can also average the probabilities of several models before decoding to ensemble them. They're saved to `test_probs.pkl` so you don't have to re-run the model for that.
+- **Cleaning the strings.** Leading and trailing punctuation is trimmed because, with the missing `f`, the metric would count `"Київ,"` as different from `"Київ"`. Duplicates within a text are removed because the metric uses sets anyway.
+- **Format.** `json.dumps(..., ensure_ascii=False)` gives `["Києва", "Хелма"]` with readable Cyrillic, matching the sample submission. pandas quotes the field automatically, and I checked that the file loads back into the same lists.
+
+One small change: `tags_to_spans` replaces the earlier `bio_to_spans` for prediction. Its `"loose"` mode is a bit broader than `bio_to_spans`, because it also merges `B B`. The validation metric during training still uses `bio_to_spans`, which is fine. Just make sure you report which mode your final submission uses.
+
+Run Cell 2 after training and send me the two `labeling_sample` scores if you'd like help choosing the mode.
+
+================================================================================
+USER (message 9)
+================================================================================
+[Attached: screenshot of Colab's "Change runtime type" dialog (in Ukrainian) with options: CPU, G4 GPU, A100 GPU, L4 GPU, T4 GPU, H100 GPU (greyed out), v6e-1 TPU, v5e-1 TPU, and a "High RAM" toggle]
+
+what is the strongest here
+
+================================================================================
+ASSISTANT (response 9)
+================================================================================
+**G4 is the strongest GPU you can pick right now.** The "G4" is actually an NVIDIA RTX PRO 6000 (Blackwell architecture) with ~96 GB of VRAM. H100 would be faster, but it's greyed out, so it isn't available to you. A100 is a close second.
+
+For this assignment I'd pick **A100**, or even L4:
+
+- **The model is small.** A 2-layer BiLSTM with an embedding table fits easily on any of these GPUs, so G4's 96 GB brings no benefit.
+- **The fastest GPU uses up your compute units fastest.** One comparison lists roughly ~5.40 units/hour for an A100 40 GB and ~8.71 for the RTX PRO 6000. Several W&B runs on A100 cost noticeably less.
+- **The GPU won't be the slowest part anyway.** Our `Dataset` tokenizes text on the CPU, so speed depends more on the data loader. On any GPU, raise `num_workers` in the DataLoaders to the number of CPU cores (`os.cpu_count()`).
+
+**Skip the TPUs (v6e-1, v5e-1).** PyTorch needs the extra `torch_xla` library to use them, and recurrent models like LSTMs run poorly on TPUs.
+
+**Turn on "Великий обсяг оперативної пам'яті" (High RAM).** Loading 1.5M rows and parsing their spans needs more memory than the default, and this setting matters more for our pipeline than the GPU choice.
+
+Sources:
+- [Colab GPUs Features & Pricing (McCormick ML)](https://mccormickml.com/2024/04/23/colab-gpus-features-and-pricing/)
+- [Colab alternatives / Colab GPU burn rates (Thunder Compute)](https://thundercompute.com/blog/colab-alternatives-for-cheap-deep-learning-in-2025)
+
+================================================================================
+USER (message 10)
+================================================================================
+[Attached: training log of the first run (NVIDIA L4; model summary: Embedding 48.0M, LSTM 2.4M, Linear 1.5K, total 50.4M params; Epoch 5/9, 4717 steps per epoch, ~5 min per epoch; train_loss_epoch 0.003, val_loss 0.019, val_f1 0.903 at the last epoch; best checkpoint best-epoch=3-val_f1=0.9099.ckpt; W&B run summary with per-layer gradient norms)]
+
+================================================================================
+ASSISTANT (response 10)
+================================================================================
+The run worked. The best checkpoint is from **epoch 3, with val F1 = 0.910**, and early stopping ended training after epoch 5 (two epochs without improvement).
+
+**What the log shows**
+
+- **The model starts to overfit after about epoch 3.** At the end, training loss is 0.003 while validation loss is 0.019, about six times higher, and val F1 stopped improving. Early stopping and checkpointing handled this as intended: you keep the epoch 3 model, not the last one.
+- **The embedding table is 95% of the model** (48M of 50.4M parameters, so the vocabulary is about 375k words × 128). That's the most likely source of the overfitting: many rare words get their own vector, and the model can memorize them.
+- **Gradients look healthy.** Gradient norms drift down smoothly as the loss shrinks, with no spikes and nothing collapsing to zero early. The final values are tiny because the training loss is almost 0, which is normal. Clipping at 1.0 never activated, so you could mention in the report that it was a safety net that wasn't needed.
+- **0.91 is the in-domain score** (clean news sentences, the same kind as training). Expect `labeling_sample` and the leaderboard to be clearly lower, for the reasons from the EDA: long Telegram posts, and streets and addresses labeled as locations.
+
+**The two warnings are harmless.** The W&B "anonymous setting" warning changes nothing. The tensor cores message suggests `torch.set_float32_matmul_precision("high")` at the top of the notebook, which would make epochs faster on the L4 but is optional.
+
+**Next step:** run the prediction cell. It prints the `labeling_sample` F1 for strict and loose merging and writes `submission.csv`. Then submit and compare with the baseline.
+
+If you don't beat the baseline, try these, changing one at a time, and stop as soon as you beat it:
+1. `dropout=0.5`, against the overfitting.
+2. `min_freq=5`. This shrinks the embedding table a lot and gives more `<unk>`s in training, so the model learns to cope with unknown words the way it will have to on test.
+3. `rnn="gru"`, as a cheap comparison for the report.
+
+Send me the two `labeling_sample` scores and your leaderboard score, and we'll decide whether any further runs are worth it.
+
+================================================================================
+USER (message 11)
+================================================================================
+```
+FileNotFoundError                         Traceback (most recent call last)
+/tmp/ipykernel_1591/1122002812.py in <cell line: 0>()
+      2
+      3 model = Tagger.load_from_checkpoint(ckpt.best_model_path).to("cuda" if torch.cuda.is_available() else "cpu")
+----> 4 vocab = pickle.load(open("vocab.pkl", "rb"))
+      5
+      6 lab = pd.read_csv("data/labeling_sample.csv")
+
+FileNotFoundError: [Errno 2] No such file or directory: 'vocab.pkl'
+```
+
+================================================================================
+ASSISTANT (response 11)
+================================================================================
+The vocabulary file was never saved. I only mentioned saving it in a note after the training cell and didn't put it in the code. Since you're still in the same Colab session, the vocabulary is still in memory, so run this once before the prediction cell:
+
+```python
+import pickle
+assert len(vocab) == model.hparams.vocab_size, "this vocab doesn't match the trained model"
+pickle.dump(vocab, open("vocab.pkl", "wb"))
+```
+
+Then re-run the prediction cell; it will load `vocab.pkl` without errors.
+
+The `assert` checks that the `vocab` in memory is the one the model was trained with: the embedding table has exactly one row per vocabulary word. If you had rebuilt the vocabulary with a different `min_freq`, the word ids would point to the wrong embedding rows and the predictions would be garbage without any error. That's why the vocabulary has to be saved together with the model.
+
+If the runtime ever restarts, re-running `build_vocab` on the same `train_df` with the same `min_freq` gives the same vocabulary, but saving it is safer. Copy `vocab.pkl` to Google Drive next to the checkpoint, because Colab deletes local files when the session ends.
+
+================================================================================
+USER (message 12)
+================================================================================
+how can i submit right now to see if i beat the baseline, or is it too soon?
+
+================================================================================
+ASSISTANT (response 12)
+================================================================================
+It's not too soon. Submit now. The first submission tells you whether the whole pipeline works (format, decoding, line splitting), and every later experiment gets compared against that score.
+
+**1. Check the file before uploading** (takes a second):
+
+```python
+sub = pd.read_csv("submission.csv")
+print(sub.shape, sub.columns.tolist())               # expect (477, 2) ['text_id', 'locations']
+print((sub["locations"] != "[]").mean())             # share of texts with at least one location
+print(sub[sub["locations"] != "[]"].head(10))
+```
+
+If the share of non-empty predictions is near 0%, something went wrong in decoding. `labeling_sample` had about 60% of texts with at least one location, so the share should be roughly in that range.
+
+**2. Download the file from Colab:**
+
+```python
+from google.colab import files
+files.download("submission.csv")
+```
+
+Or right-click the file in Colab's Files panel on the left and choose Download.
+
+**3. Upload it on Kaggle:** open the competition page, click **Submit Prediction**, drag in `submission.csv`, and add a short description such as `BiLSTM word-level, strict, val_f1 0.910`. The score appears within a minute.
+
+**What to know:**
+
+- **The public leaderboard scores only part of the 477 test texts.** The final ranking uses the rest, so small differences of ±0.01 between submissions are mostly noise.
+- **There's a daily submission limit,** shown on the Submit page. Don't spend submissions on every small change; use the `labeling_sample` score to choose what's worth submitting.
+- **The baseline usually appears on the leaderboard** as a named row (from the spaCy baseline notebook). That's the number you need to beat.
+
+Write the leaderboard score in your W&B run notes (or as a run tag) so the report has validation F1, `labeling_sample` F1 and leaderboard F1 side by side.
+
+================================================================================
+USER (message 13)
+================================================================================
+where to see the limit of submissions
+
+================================================================================
+ASSISTANT (response 13)
+================================================================================
+On Kaggle, the limit shows up in three places:
+
+1. **The Submit Prediction panel.** The upload dialog usually shows how many submissions you have left today. This is the quickest place to check.
+2. **The Rules tab** of the competition. There's usually a line like "You may submit a maximum of N entries per day", plus how many final submissions you can select.
+3. **The Submissions tab** (or "My Submissions"). It lists everything you've submitted so far with scores, and often says how many submissions you have left today.
+
+The daily count **resets at midnight UTC, which is 02:00 Kyiv time**, not at your local midnight.
+
+If none of these shows a number, the hosts may have set a custom limit. In that case, check the course page or ask your instructor.
+
+================================================================================
+USER (message 14)
+================================================================================
+I want to run a small set of experiments, changing ONE thing each time from the baseline: (a) GRU instead of LSTM, (b) 2 layers instead of 1, (c) unidirectional vs bidirectional, (d) AdamW + OneCycleLR vs plain Adam, (e) pretrained Ukrainian fastText embeddings (cc.uk.300.vec) loaded only for words in my vocab, (f) BPE tokenization trained with the HuggingFace `tokenizers` library (tokenizer only, no transformer), with the labels mapped to subwords. Give me only the code changes needed for each, as small as possible, and a results-table template with columns: experiment, CV score, LB score, notes.
+
+================================================================================
+ASSISTANT (response 14)
+================================================================================
+I tested the less obvious changes. BPE tokens map to labels and back correctly, including the address with the apostrophe. AdamW with OneCycleLR trains, and its learning rate gets logged.
+
+## Shared setup (once)
+
+To make each run differ from the baseline in exactly one setting, keep the baseline in one dict and override a single key per run:
+
+```python
+base_config = dict(name="baseline", rnn="lstm", emb_dim=128, hidden=256, num_layers=2, bidirectional=True,
+                   dropout=0.3, lr=1e-3, batch_size=256, max_epochs=10, patience=2, grad_clip=1.0,
+                   val_size=20_000, seed=42, optimizer="adam")
+config = {**base_config}            # per run: config = {**base_config, "name": "...", <one change>}
+```
+
+In the Trainer cell, change the logger line so each W&B run is named after its experiment:
+
+```python
+logger=WandbLogger(project="ua-locations-ner", name=config["name"]),
+```
+
+## (a) GRU instead of LSTM
+
+```python
+config = {**base_config, "name": "gru", "rnn": "gru"}
+```
+
+## (b) Number of layers
+
+Your baseline already has 2 layers, so this experiment is **1 layer vs 2**:
+
+```python
+config = {**base_config, "name": "1-layer", "num_layers": 1}
+```
+
+With 1 layer, the dropout *between* LSTM layers turns off automatically. The dropout before the output layer still applies. Put that in the notes column.
+
+## (c) Unidirectional
+
+```python
+config = {**base_config, "name": "unidirectional", "bidirectional": False}
+```
+
+## (d) AdamW + OneCycleLR
+
+Replace `configure_optimizers` in `Tagger`:
+
+```python
+def configure_optimizers(self):
+    cfg = self.hparams.config
+    if cfg.get("optimizer", "adam") == "adam":
+        return torch.optim.Adam(self.parameters(), lr=cfg["lr"])
+    opt = torch.optim.AdamW(self.parameters(), lr=cfg["lr"], weight_decay=cfg.get("weight_decay", 0.01))
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg["lr"],
+                                                total_steps=self.trainer.estimated_stepping_batches)
+    return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "step"}}
+```
+
+Add a callback so W&B logs the learning rate (import `LearningRateMonitor` from `lightning.pytorch.callbacks`):
+
+```python
+callbacks=[ckpt, early, LearningRateMonitor(logging_interval="step")],
+```
+
+Then:
+
+```python
+config = {**base_config, "name": "adamw-onecycle", "optimizer": "adamw_onecycle", "lr": 3e-3}
+```
+
+OneCycle first raises the learning rate, then lowers it over all `max_epochs`. If early stopping ends training halfway, the learning rate is still high at that point. So also set `"patience": 10` for this run, which disables early stopping; the checkpoint still keeps the best epoch. Write this in the notes, because strictly it's a second change that the scheduler needs. `lr` here is the *peak* rate, which is why it's higher than Adam's `1e-3`.
+
+## (e) Pretrained fastText (cc.uk.300)
+
+```python
+!wget -q https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.uk.300.vec.gz
+```
+
+```python
+import gzip
+
+def load_fasttext(path, vocab, dim=300):
+    needed = set(vocab) | {w.lower() for w in vocab}
+    vecs = {}
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        next(f)                                                    # header line: "n_words dim"
+        for line in f:
+            word, rest = line.rstrip().split(" ", 1)
+            if word in needed:                                     # keep only words we can use
+                vecs[word] = np.asarray(rest.split(" "), dtype=np.float32)
+    weights = np.random.normal(0, 0.1, (len(vocab), dim)).astype(np.float32)   # random for words not found
+    weights[PAD] = 0
+    hits = 0
+    for w, i in vocab.items():
+        v = vecs.get(w, vecs.get(w.lower()))                       # exact form first, then lowercase
+        if v is not None:
+            weights[i] = v
+            hits += 1
+    print(f"fastText vectors found for {hits / len(vocab):.1%} of vocab")
+    return torch.tensor(weights)
+
+pretrained = load_fasttext("cc.uk.300.vec.gz", vocab)
+```
+
+In `Tagger.__init__`, add a `pretrained=None` argument, exclude it from the saved hyperparameters, and copy it in after the embedding is created:
+
+```python
+def __init__(self, config, vocab_size, val_texts=None, val_spans=None, pretrained=None):
+    super().__init__()
+    self.save_hyperparameters(ignore=["val_texts", "val_spans", "pretrained"])
+    ...
+    self.emb = nn.Embedding(vocab_size, config["emb_dim"], padding_idx=PAD)
+    if pretrained is not None:
+        self.emb.weight.data.copy_(pretrained)
+```
+
+```python
+config = {**base_config, "name": "fasttext", "emb_dim": 300}
+model = Tagger(config, len(vocab), val_small["text"].tolist(), val_small["spans"].tolist(), pretrained=pretrained)
+```
+
+Reading the 1.2 GB file takes a few minutes. The vectors are fine-tuned during training. `emb_dim` must be 300 to match them, which is a forced side effect; put it in the notes. Russian words mostly won't be found, because these vectors are Ukrainian only. The printed hit rate is worth reporting.
+
+## (f) BPE tokenization
+
+Run this one **last**. It replaces the global `tokenize` and `vocab`, and every other function (`spans_to_bio`, `NERDataset`, the validation metric, `predict_probs`) picks them up automatically, because they all work with `(token, start, end)` triples.
+
+```python
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"        # avoid deadlock warnings with DataLoader workers
+from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+
+bpe = Tokenizer(models.BPE(unk_token="<unk>"))
+bpe.pre_tokenizer = pre_tokenizers.Whitespace()
+bpe.train_from_iterator(train_df["text"], trainers.BpeTrainer(vocab_size=30_000, special_tokens=["<pad>", "<unk>"]),
+                        length=len(train_df))
+bpe.save("bpe.json")                                   # needed again at prediction time
+
+def tokenize(text):
+    enc = bpe.encode(text)
+    return [(t, s, e) for t, (s, e) in zip(enc.tokens, enc.offsets)]
+
+vocab = bpe.get_vocab()                                # "<pad>" -> 0, "<unk>" -> 1, same ids as before
+config = {**base_config, "name": "bpe-30k"}
+```
+
+**How labels map to subwords:** `spans_to_bio` already tags every token that *overlaps* a span. The first subword gets `B-LOC` and the rest `I-LOC`. For example, "Солом'янська" becomes `Солом` (I), `'` (I), `янська` (I). Decoding joins them back through the character positions. In a new session, load the tokenizer with `bpe = Tokenizer.from_file("bpe.json")` and redefine `tokenize`. To go back to word tokens, re-run the original tokenizer and vocabulary cells.
+
+## Results table
+
+| Experiment | CV score (val F1) | LB score | Notes |
+|---|---|---|---|
+| Baseline: BiLSTM, 2 layers, Adam, word tokens | 0.910 | | best epoch 3; train loss ≪ val loss after epoch 3 |
+| (a) GRU instead of LSTM | | | |
+| (b) 1 layer instead of 2 | | | between-layer dropout off |
+| (c) Unidirectional | | | |
+| (d) AdamW + OneCycleLR | | | peak lr 3e-3; early stopping off |
+| (e) fastText cc.uk.300 | | | emb_dim 300; vocab hit rate: __% |
+| (f) BPE, 30k vocab | | | |
+
+**Practical notes:**
+
+- **Time and fairness:** each run is about 30 minutes on the L4, so six runs take about 3 hours. To go faster, add `limit_train_batches=0.3` to the Trainer, but then re-run the baseline with the same setting so the comparison stays fair.
+- **What counts as a real difference:** with one seed, differences under about 0.005 in CV are within noise. Say so in the report and don't rank models on them.
+- **Leaderboard submissions:** you have only a few per day. Submit only the runs that clearly beat the baseline in CV, and put "—" in the LB column for the rest.
+
+================================================================================
+USER (message 15)
+================================================================================
+make the code whole - so i can paste it in the experiments part in my notebook
+
+================================================================================
+ASSISTANT (response 15)
+================================================================================
+I put the experiments section together as 7 cells and ran all of them end to end on toy data, with W&B in offline mode. Every experiment trains, writes its own submission file and adds a row to the results table. After the BPE run, the word tokenizer is restored correctly. The scores in my test were meaningless (2 epochs on toy data); only the plumbing was being checked.
+
+**What these cells need from earlier in your notebook:** `tokenize`, `spans_to_bio`, `bio_to_spans`, `TAGS`, `PAD`, `UNK`, `NERDataset`, `collate_fn`, `comp_metric`, `predict_probs`, `probs_to_locations`, `make_submission`, plus `train_df` and `val_df` (with the `spans` column) and `vocab`.
+
+### Cell E1: setup
+
+```python
+# ===================== EXPERIMENTS: setup =====================
+import os, gzip, ast
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import lightning as L
+import wandb
+from torch.utils.data import DataLoader
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from lightning.pytorch.utilities import grad_norm
+from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+NUM_WORKERS = os.cpu_count()
+
+lab = pd.read_csv("data/labeling_sample.csv")
+test = pd.read_csv("data/test.csv")
+for df in (lab, test):
+    df["text"] = df["text"].fillna("").astype(str)
+lab_gold = lab["locations"].apply(ast.literal_eval).tolist()
+
+base_config = dict(name="baseline", rnn="lstm", emb_dim=128, hidden=256, num_layers=2, bidirectional=True,
+                   dropout=0.3, lr=1e-3, batch_size=256, max_epochs=10, patience=2, grad_clip=1.0,
+                   val_size=20_000, seed=42, optimizer="adam")
+```
+
+### Cell E2: model (replaces your earlier `Tagger`)
+
+```python
+# ===================== EXPERIMENTS: model (replaces the earlier Tagger) =====================
+class Tagger(L.LightningModule):
+    def __init__(self, config, vocab_size, val_texts=None, val_spans=None, pretrained=None):
+        super().__init__()
+        self.save_hyperparameters(ignore=["val_texts", "val_spans", "pretrained"])
+        rnn_cls = nn.LSTM if config["rnn"] == "lstm" else nn.GRU
+        self.emb = nn.Embedding(vocab_size, config["emb_dim"], padding_idx=PAD)
+        if pretrained is not None:
+            self.emb.weight.data.copy_(pretrained)                        # (e) fastText init
+        self.rnn = rnn_cls(config["emb_dim"], config["hidden"], num_layers=config["num_layers"],
+                           bidirectional=config["bidirectional"], batch_first=True,
+                           dropout=config["dropout"] if config["num_layers"] > 1 else 0.0)
+        out_dim = config["hidden"] * (2 if config["bidirectional"] else 1)
+        self.drop = nn.Dropout(config["dropout"])
+        self.head = nn.Linear(out_dim, len(TAGS))
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+        self.val_texts, self.val_spans, self.val_preds = val_texts, val_spans, []
+
+    def forward(self, ids, mask):
+        x = self.emb(ids)
+        packed = pack_padded_sequence(x, mask.sum(1).cpu(), batch_first=True, enforce_sorted=False)
+        out, _ = self.rnn(packed)
+        out, _ = pad_packed_sequence(out, batch_first=True, total_length=ids.size(1))
+        return self.head(self.drop(out))
+
+    def _loss(self, logits, tags):
+        return self.loss_fn(logits.reshape(-1, len(TAGS)), tags.reshape(-1))
+
+    def training_step(self, batch, batch_idx):
+        ids, tags, mask = batch
+        loss = self._loss(self(ids, mask), tags)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        ids, tags, mask = batch
+        logits = self(ids, mask)
+        self.log("val_loss", self._loss(logits, tags), on_epoch=True, prog_bar=True)
+        for row, m in zip(logits.argmax(-1), mask):
+            self.val_preds.append(row[m].tolist())
+
+    def on_validation_epoch_end(self):
+        if self.val_texts is not None and len(self.val_preds) == len(self.val_texts):
+            y_true, y_pred = [], []
+            for text, spans, tag_ids in zip(self.val_texts, self.val_spans, self.val_preds):
+                pred_spans = bio_to_spans(tokenize(text), [TAGS[t] for t in tag_ids])
+                y_true.append([text[s:e] for s, e in spans])
+                y_pred.append([text[s:e] for s, e in pred_spans])
+            self.log("val_f1", comp_metric(y_true, y_pred), prog_bar=True)
+        self.val_preds.clear()
+
+    def on_before_optimizer_step(self, optimizer):
+        self.log_dict(grad_norm(self, norm_type=2))
+
+    def configure_optimizers(self):
+        cfg = self.hparams.config
+        if cfg.get("optimizer", "adam") == "adam":
+            return torch.optim.Adam(self.parameters(), lr=cfg["lr"])
+        opt = torch.optim.AdamW(self.parameters(), lr=cfg["lr"], weight_decay=cfg.get("weight_decay", 0.01))   # (d)
+        sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg["lr"],
+                                                    total_steps=self.trainer.estimated_stepping_batches)
+        return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "step"}}
+```
+
+### Cell E3: one function runs one whole experiment
+
+```python
+# ===================== EXPERIMENTS: one function = one full run =====================
+def run_experiment(config, vocab, pretrained=None, notes=""):
+    L.seed_everything(config["seed"])
+    val_small = val_df.sample(config["val_size"], random_state=config["seed"])
+    train_dl = DataLoader(NERDataset(train_df["text"], train_df["spans"], vocab), batch_size=config["batch_size"],
+                          shuffle=True, collate_fn=collate_fn, num_workers=NUM_WORKERS)
+    val_dl = DataLoader(NERDataset(val_small["text"], val_small["spans"], vocab), batch_size=config["batch_size"],
+                        shuffle=False, collate_fn=collate_fn, num_workers=NUM_WORKERS)
+
+    # 1) train
+    model = Tagger(config, len(vocab), val_small["text"].tolist(), val_small["spans"].tolist(), pretrained=pretrained)
+    ckpt = ModelCheckpoint(dirpath=f"checkpoints/{config['name']}", filename="best-{epoch}-{val_f1:.4f}",
+                           monitor="val_f1", mode="max", save_top_k=1)
+    trainer = L.Trainer(max_epochs=config["max_epochs"],
+                        logger=WandbLogger(project="ua-locations-ner", name=config["name"]),
+                        callbacks=[ckpt, EarlyStopping(monitor="val_f1", mode="max", patience=config["patience"]),
+                                   LearningRateMonitor(logging_interval="step")],
+                        gradient_clip_val=config["grad_clip"], log_every_n_steps=50, accelerator="auto")
+    trainer.fit(model, train_dl, val_dl)
+
+    # 2) best checkpoint -> labeling_sample F1 (both merge modes) -> submission file
+    best = Tagger.load_from_checkpoint(ckpt.best_model_path).to(DEVICE)
+    lab_tokens, lab_probs = predict_probs(best, lab["text"], vocab)
+    lab_f1 = {m: comp_metric(lab_gold, probs_to_locations(lab["text"], lab_tokens, lab_probs, m))
+              for m in ("strict", "loose")}
+    mode = max(lab_f1, key=lab_f1.get)
+    test_tokens, test_probs = predict_probs(best, test["text"], vocab)
+    make_submission(test, test_tokens, test_probs, mode=mode, path=f"submission_{config['name']}.csv")
+
+    cv = round(ckpt.best_model_score.item(), 4)
+    wandb.run.summary.update({"best_val_f1": cv, "lab_f1_strict": lab_f1["strict"], "lab_f1_loose": lab_f1["loose"]})
+    wandb.finish()
+    del model, best
+    torch.cuda.empty_cache()
+
+    return {"experiment": config["name"], "CV score": cv, "LB score": "",
+            "notes": f"{notes}; lab F1 strict={lab_f1['strict']:.3f} loose={lab_f1['loose']:.3f}; "
+                     f"submitted mode={mode}; ckpt={os.path.basename(ckpt.best_model_path)}".lstrip("; ")}
+
+results = []
+```
+
+### Cell E4: baseline and experiments (a)–(d), with word tokens
+
+```python
+# ===================== EXPERIMENTS: baseline + (a)-(d), word tokens =====================
+experiments = [
+    ({**base_config}, "BiLSTM, 2 layers, Adam (re-run in the same pipeline)"),
+    ({**base_config, "name": "gru", "rnn": "gru"}, "(a) GRU instead of LSTM"),
+    ({**base_config, "name": "1-layer", "num_layers": 1}, "(b) 1 layer; between-layer dropout off"),
+    ({**base_config, "name": "unidirectional", "bidirectional": False}, "(c) forward direction only"),
+    ({**base_config, "name": "adamw-onecycle", "optimizer": "adamw_onecycle", "lr": 3e-3, "patience": 100},
+     "(d) AdamW wd=0.01 + OneCycleLR, peak lr 3e-3; early stopping off so the cycle completes"),
+]
+for cfg, notes in experiments:
+    results.append(run_experiment(cfg, vocab, notes=notes))
+    pd.DataFrame(results).to_csv("results.csv", index=False)       # saved after every run
+```
+
+### Cell E5: (e) fastText embeddings
+
+```python
+# ===================== EXPERIMENTS: (e) fastText cc.uk.300 =====================
+!wget -q -nc https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.uk.300.vec.gz
+
+def load_fasttext(path, vocab, dim=300):
+    needed = set(vocab) | {w.lower() for w in vocab}
+    vecs = {}
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        next(f)                                                    # header line: "n_words dim"
+        for line in f:
+            word, rest = line.rstrip().split(" ", 1)
+            if word in needed:
+                vecs[word] = np.asarray(rest.split(" "), dtype=np.float32)
+    weights = np.random.normal(0, 0.1, (len(vocab), dim)).astype(np.float32)
+    weights[PAD] = 0
+    hits = 0
+    for w, i in vocab.items():
+        v = vecs.get(w, vecs.get(w.lower()))                       # exact form first, then lowercase
+        if v is not None:
+            weights[i] = v
+            hits += 1
+    return torch.tensor(weights), hits / len(vocab)
+
+pretrained, hit_rate = load_fasttext("cc.uk.300.vec.gz", vocab)
+print(f"fastText vectors found for {hit_rate:.1%} of vocab")
+results.append(run_experiment({**base_config, "name": "fasttext", "emb_dim": 300}, vocab, pretrained=pretrained,
+                              notes=f"(e) cc.uk.300 init, fine-tuned; emb_dim 300; vocab hit rate {hit_rate:.1%}"))
+pd.DataFrame(results).to_csv("results.csv", index=False)
+del pretrained
+```
+
+### Cell E6: (f) BPE subwords (run last)
+
+```python
+# ===================== EXPERIMENTS: (f) BPE subword tokens =====================
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+
+bpe = Tokenizer(models.BPE(unk_token="<unk>"))
+bpe.pre_tokenizer = pre_tokenizers.Whitespace()
+bpe.train_from_iterator(train_df["text"], trainers.BpeTrainer(vocab_size=30_000, special_tokens=["<pad>", "<unk>"]),
+                        length=len(train_df))
+bpe.save("bpe.json")
+bpe_vocab = bpe.get_vocab()                                        # "<pad>" -> 0, "<unk>" -> 1
+
+word_tokenize = tokenize                                           # keep the word tokenizer to restore later
+def tokenize(text):
+    enc = bpe.encode(text)
+    return [(t, s, e) for t, (s, e) in zip(enc.tokens, enc.offsets)]
+
+try:
+    results.append(run_experiment({**base_config, "name": "bpe-30k"}, bpe_vocab,
+                                  notes="(f) BPE 30k subwords; labels: first overlapping subword B, rest I"))
+    pd.DataFrame(results).to_csv("results.csv", index=False)
+finally:
+    tokenize = word_tokenize                                       # back to word tokens for any later cell
+```
+
+### Cell E7: results table
+
+```python
+# ===================== EXPERIMENTS: results table =====================
+results_df = pd.DataFrame(results)
+results_df.to_csv("results.csv", index=False)
+print(results_df.to_markdown(index=False))                         # paste into the report; fill LB after submitting
+results_df
+```
+
+**Before you run it:**
+
+- **It takes about 3.5 hours in total** (7 runs × ~30 min on the L4). Cell E4 alone is about 2.5 hours. If Colab disconnects, nothing done so far is lost: `results.csv` and each `submission_<name>.csv` are written after every run. To run in smaller pieces, comment out entries in the `experiments` list.
+- **Leaderboard column:** each run writes its own `submission_<name>.csv`, using whichever merge mode scored higher on `labeling_sample`. Submit only the runs that clearly beat the baseline in CV, then fill in `LB score` by hand.
+- **The baseline is re-run on purpose,** so every row comes from exactly the same pipeline. To skip that and save 30 minutes, delete the first entry of `experiments` and add your earlier result (CV 0.910) to the table by hand.
+- **Older checkpoints still load** with the new `Tagger`, because the new `pretrained` argument is optional.
+
+================================================================================
+USER (message 16)
+================================================================================
+[Attached: results table from the experiments]
+
+| experiment     |   CV score | LB score   | notes |
+|:---------------|-----------:|:-----------|:------|
+| baseline       |     0.9099 |            | BiLSTM, 2 layers, Adam (re-run in the same pipeline); lab F1 strict=0.548 loose=0.548; submitted mode=strict; ckpt=best-epoch=3-val_f1=0.9099.ckpt |
+| gru            |     0.9047 |            | (a) GRU instead of LSTM; lab F1 strict=0.615 loose=0.593; submitted mode=strict; ckpt=best-epoch=2-val_f1=0.9047.ckpt |
+| 1-layer        |     0.9001 |            | (b) 1 layer; between-layer dropout off; lab F1 strict=0.657 loose=0.622; submitted mode=strict; ckpt=best-epoch=2-val_f1=0.9001.ckpt |
+| unidirectional |     0.8898 |            | (c) forward direction only; lab F1 strict=0.583 loose=0.575; submitted mode=strict; ckpt=best-epoch=3-val_f1=0.8898.ckpt |
+| adamw-onecycle |     0.91   |            | (d) AdamW wd=0.01 + OneCycleLR, peak lr 3e-3; early stopping off so the cycle completes; lab F1 strict=0.613 loose=0.605; submitted mode=strict; ckpt=best-epoch=4-val_f1=0.9100.ckpt |
+| fasttext       |     0.9152 |            | (e) cc.uk.300 init, fine-tuned; emb_dim 300; vocab hit rate 77.1%; lab F1 strict=0.615 loose=0.615; submitted mode=strict; ckpt=best-epoch=1-val_f1=0.9152.ckpt |
+| bpe-30k        |     0.9072 |            | (f) BPE 30k subwords; labels: first overlapping subword B, rest I; lab F1 strict=0.582 loose=0.568; submitted mode=strict; ckpt=best-epoch=3-val_f1=0.9072.ckpt |
+
+================================================================================
+ASSISTANT (response 16)
+================================================================================
+All 7 runs finished. **fastText is the best model on validation (0.915)**, and it's the one I'd submit first.
+
+## What the results show
+
+**Validation F1 (the big, reliable score).** Earlier I said differences under about 0.005 are within noise for a single seed. By that rule:
+
+- **Bidirectional matters most.** The forward-only model loses 0.020 (0.890 vs 0.910), the only clearly bad change. A location often depends on the word *after* it (e.g. "Орловской **областях**"), and a forward-only model can't see that.
+- **fastText helps a little (+0.005), right at the noise limit.** It also got there fastest: its best epoch was epoch 1, against epoch 3 for the baseline. Starting from pretrained word vectors speeds up learning. The vectors covered 77% of the vocabulary.
+- **GRU, BPE and AdamW + OneCycle are about the same as the baseline** (0.905–0.910). BPE is notable because its embedding table is about 12× smaller (30k subwords vs ~375k words) and it still scores about the same. OneCycle needed more epochs for no gain.
+- **1 layer is slightly worse (−0.010).**
+
+**`labeling_sample` F1 (26 test-like texts).** Scores range from 0.548 to 0.657, much lower than validation, as the EDA predicted. The ranking also differs: 1-layer is best here but second-worst on validation. With only ~32 gold locations, one location more or less shifts F1 by about 0.03. So these differences are 2–3 locations and mostly noise. Treat this as a reality check, not something to choose models by.
+
+**Strict vs loose:** strict was better or equal in every run, so keep it.
+
+## What to submit
+
+With limited submissions per day, in this order:
+
+1. `submission_fasttext.csv`: best validation score, and good on `labeling_sample` too.
+2. `submission_1-layer.csv`: best on `labeling_sample`. This tests whether the test-like sample or validation predicts the leaderboard better, which is a good point for the report.
+3. `submission_baseline.csv`, if you haven't submitted the baseline yet. You need its leaderboard score as the reference.
+
+Then fill in the `LB score` column.
+
+## For the report (short version)
+
+Bidirectionality was the only architecture choice with a clear effect (−0.02 validation F1 without it), because a location's label often depends on the words that follow it. Pretrained fastText embeddings gave the best validation F1 (0.915) and converged fastest, but the gain over the baseline (+0.005) is within single-seed noise. GRU, BPE subwords and AdamW with OneCycleLR performed on par with the baseline; BPE did so with a 12× smaller embedding table. On the 26-text `labeling_sample` all models scored much lower (0.55–0.66) and ranked differently from validation. This confirms the shift between clean news sentences and Telegram posts, and shows that the clean validation split is not a reliable guide to leaderboard performance.
+
+When you have the leaderboard scores, send them and I'll help you write the final conclusions.
+
+================================================================================
+USER (message 17)
+================================================================================
+what is submission_baseline&
+
+================================================================================
+ASSISTANT (response 17)
+================================================================================
+`submission_baseline.csv` holds the predictions of **your own first model**: the 2-layer BiLSTM with Adam and word tokens. The experiments code named that run "baseline" because it's the starting point the other experiments change one setting from. In the experiments it was trained a second time, and the `run_experiment` function wrote its predictions to that file.
+
+It is **not** the competition's baseline. "Beat the baseline" refers to the organizers' spaCy model (the notebook linked on the Data page), whose score appears as a row on the leaderboard.
+
+**Do you need to submit it?** Probably not. If you already uploaded `submission.csv` after your first training run, that's the same model: same seed, same best epoch 3, same val F1 0.9099. Its leaderboard score already counts as the "baseline" row of your table. Use that submission on fastText or 1-layer instead.
+
+In the report, call this row **"BiLSTM baseline"** or **"our baseline"** so readers don't confuse it with the organizers' spaCy baseline.
+
+================================================================================
+USER (message 18)
+================================================================================
+gather everything you meant for the report in a README.md, so i can add it to github
+[Request interrupted by user]
+
+================================================================================
+USER (message 19)
+================================================================================
+- Prepare a comprehensive report including: - data insights, - feature engineering, - tried models, - chosen hyperparameters, - metrics and optimization curves, - model insights and conclusions.
+
+these are the requirements for the report
+
+================================================================================
+ASSISTANT (response 19)
+================================================================================
+[Delivered file: README.md (the full report; see README.md in the repository)]
+
+I've put the full report in `README.md`. It has a section for each of your required items: data insights, feature engineering, tried models, chosen hyperparameters, metrics and optimization curves, and model insights and conclusions. It also covers the evaluation metric and your validation split.
+
+A few things you need to fill in or check before pushing to GitHub:
+
+- **Leaderboard scores:** the "Public LB" cells (in the summary table and the experiments table) and the organizers' spaCy baseline score are marked **TODO**.
+- **Curve images:** in §8 the README links to `images/loss.png`, `images/val_f1.png`, `images/grad_norm.png` and `images/lr.png`. Export these panels from your W&B project (panel menu → Download PNG) and save them under those names in an `images/` folder.
+- **Vocabulary size:** I estimated "~375k words" from the parameter count in your log (48.0M / 128). Check it against the `vocab size` your notebook printed.
+- **Notebook name:** replace `notebook.ipynb` in the repository structure section with the real file name.
+- **Final model:** the conclusions say the fastText model is the final submission. Change that if the leaderboard favors another one.
+
+The README includes the link to your W&B project, which is fine if it's public. If the project is private, readers won't be able to open it, so either make it public or remove the link.
+
+================================================================================
+USER (message 20)
+================================================================================
+```notebook-python
+from google.colab import files
+import pandas as pd
+import glob
+import ast
+from collections import Counter
+import pandas as pd
+import matplotlib.pyplot as plt
+import re
+import string
+from typing import List
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import GroupShuffleSplit
+import re
+from collections import Counter
+import torch
+from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
+import ast
+import numpy as np
+import pandas as pd
+from torch.utils.data import DataLoader
+!pip install -q lightning wandb
+import torch
+import torch.nn as nn
+import lightning as L
+from lightning.pytorch.utilities import grad_norm
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+import wandb
+from torch.utils.data import DataLoader
+from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+import pickle
+import json
+import numpy as np
+import pandas as pd
+import ast, pickle
+from google.colab import files
+import os, gzip, ast
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import lightning as L
+import wandb
+from torch.utils.data import DataLoader
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from lightning.pytorch.utilities import grad_norm
+from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+```
+
+delete duplicates from this cell
+
+================================================================================
+ASSISTANT (response 20)
+================================================================================
+Here's the cell with every duplicate removed. I moved `!pip install` to the top, so `lightning` and `wandb` are installed before they're imported.
+
+```python
+!pip install -q lightning wandb
+
+# standard library
+import os, re, ast, gzip, glob, json, pickle, string
+from collections import Counter
+from typing import List
+
+# data and plotting
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import GroupShuffleSplit
+
+# PyTorch
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
+
+# Lightning + W&B
+import lightning as L
+import wandb
+from lightning.pytorch.utilities import grad_norm
+from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+
+# Colab
+from google.colab import files
+```
+
+The BPE experiment (f) imports `from tokenizers import ...` in its own cell, so leave that import there.
+
+================================================================================
+USER (message 21)
+================================================================================
+copy all of my messages and your responses(no thinking) from this chat into a txt file ai_usage.txt
+
+================================================================================
+ASSISTANT (response 21)
+================================================================================
+[Delivered file: ai_usage.txt (this file)]
